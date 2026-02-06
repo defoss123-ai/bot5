@@ -328,6 +328,7 @@ def run_app() -> None:
 
         try:
             order_usdt = float(sum_usdt_entry.get().strip())
+            safety_order_usdt = float(safety_sum_entry.get().strip())
             safety_step = float(order_step_entry.get().strip())
             safety_count = int(order_count_entry.get().strip())
             take_profit = float(tp_entry.get().strip())
@@ -336,9 +337,23 @@ def run_app() -> None:
             messagebox.showerror("Ошибка", "Введите корректные числа")
             return None
 
-        if order_usdt <= 0 or take_profit <= 0:
+        if order_usdt <= 0 or take_profit <= 0 or safety_order_usdt <= 0:
             logger.error("Ошибка ввода: некорректные параметры ордеров")
             messagebox.showerror("Ошибка", "Введите корректные числа")
+            return None
+
+        if not 1 <= order_usdt <= 100000:
+            logger.error("Ошибка ввода: сумма первого ордера вне диапазона")
+            messagebox.showerror(
+                "Ошибка", "Сумма первого ордера должна быть 1..100000"
+            )
+            return None
+
+        if not 1 <= safety_order_usdt <= 100000:
+            logger.error("Ошибка ввода: сумма страховочного ордера вне диапазона")
+            messagebox.showerror(
+                "Ошибка", "Сумма страховочного ордера должна быть 1..100000"
+            )
             return None
 
         if not 0 <= safety_count <= 50:
@@ -361,6 +376,8 @@ def run_app() -> None:
             rsi_enabled=rsi_filter_var.get(),
             rsi_threshold=threshold,
             order_usdt=order_usdt,
+            first_order_usdt=order_usdt,
+            safety_order_usdt=safety_order_usdt,
             safety_step_pct=safety_step,
             safety_count=safety_count,
             safety_orders_count=safety_count,
@@ -861,26 +878,33 @@ def run_app() -> None:
     start_price_entry.insert(0, "1.0000")
     start_price_entry.grid(row=0, column=1, sticky="w", pady=5)
 
-    tk.Label(orders_frame, text="Сумма на 1 ордер (USDT)").grid(
+    tk.Label(orders_frame, text="Сумма первого ордера (USDT)").grid(
         row=1, column=0, sticky="w", padx=10, pady=5
     )
     sum_usdt_entry = tk.Entry(orders_frame, width=30)
     sum_usdt_entry.insert(0, "10")
     sum_usdt_entry.grid(row=1, column=1, sticky="w", pady=5)
 
-    tk.Label(orders_frame, text="Шаг страховочного ордера, %").grid(
+    tk.Label(orders_frame, text="Сумма страховочного ордера (USDT)").grid(
         row=2, column=0, sticky="w", padx=10, pady=5
+    )
+    safety_sum_entry = tk.Entry(orders_frame, width=30)
+    safety_sum_entry.insert(0, "10")
+    safety_sum_entry.grid(row=2, column=1, sticky="w", pady=5)
+
+    tk.Label(orders_frame, text="Шаг страховочного ордера, %").grid(
+        row=3, column=0, sticky="w", padx=10, pady=5
     )
     order_step_entry = tk.Entry(orders_frame, width=30)
     order_step_entry.insert(0, "2")
-    order_step_entry.grid(row=2, column=1, sticky="w", pady=5)
+    order_step_entry.grid(row=3, column=1, sticky="w", pady=5)
 
     tk.Label(orders_frame, text="Кол-во страховочных ордеров").grid(
-        row=3, column=0, sticky="w", padx=10, pady=5
+        row=4, column=0, sticky="w", padx=10, pady=5
     )
     order_count_entry = tk.Entry(orders_frame, width=30)
     order_count_entry.insert(0, "5")
-    order_count_entry.grid(row=3, column=1, sticky="w", pady=5)
+    order_count_entry.grid(row=4, column=1, sticky="w", pady=5)
 
     orders_table = ttk.Treeview(
         root,
@@ -998,6 +1022,7 @@ def run_app() -> None:
         try:
             start_price = float(start_price_entry.get().strip())
             sum_usdt = float(sum_usdt_entry.get().strip())
+            safety_order_usdt = float(safety_sum_entry.get().strip())
             step_pct = float(order_step_entry.get().strip())
             order_count = int(order_count_entry.get().strip())
             tp1_pct = float(tp1_entry.get().strip())
@@ -1014,6 +1039,7 @@ def run_app() -> None:
         if (
             start_price <= 0
             or sum_usdt <= 0
+            or safety_order_usdt <= 0
             or step_pct <= 0
             or order_count < 0
             or tp1_pct <= 0
@@ -1036,7 +1062,7 @@ def run_app() -> None:
         clear_orders_table()
         clear_tp_table()
 
-        total_usdt = sum_usdt * (1 + order_count)
+        total_usdt = sum_usdt + (safety_order_usdt * order_count)
         total_qty = 0.0
 
         order0_qty = sum_usdt / start_price
@@ -1051,7 +1077,7 @@ def run_app() -> None:
             price = start_price * (1 - (index * step_pct / 100))
             if price <= 0:
                 continue
-            amount = sum_usdt / price
+            amount = safety_order_usdt / price
             total_qty += amount
             orders_table.insert(
                 "",
@@ -1059,7 +1085,7 @@ def run_app() -> None:
                 values=(
                     index,
                     f"{price:.6f}",
-                    f"{sum_usdt:.2f}",
+                    f"{safety_order_usdt:.2f}",
                     f"{amount:.6f}",
                 ),
             )
@@ -1093,11 +1119,12 @@ def run_app() -> None:
             )
 
         logger.info(
-            "Calculated safety orders: %s, step=%s, start=%s, sum=%s",
+            "Calculated safety orders: %s, step=%s, start=%s, first=%s, safety=%s",
             order_count,
             step_pct,
             start_price,
             sum_usdt,
+            safety_order_usdt,
         )
         logger.info(
             "Totals: avg_price=%s, total_usdt=%s, total_qty=%s, tp=[%s/%s/%s], shares=[%s/%s/%s]",
@@ -1120,7 +1147,7 @@ def run_app() -> None:
     calculate_button = tk.Button(
         orders_frame, text="Рассчитать", command=handle_calculate_orders
     )
-    calculate_button.grid(row=4, column=0, columnspan=2, pady=10)
+    calculate_button.grid(row=5, column=0, columnspan=2, pady=10)
 
     orders_table.pack(padx=20, pady=10, fill="x")
     tp_table.pack(padx=10, pady=10, fill="x")

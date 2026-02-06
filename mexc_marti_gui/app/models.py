@@ -10,6 +10,8 @@ class BotSettings:
     rsi_enabled: bool
     rsi_threshold: int
     order_usdt: float
+    first_order_usdt: float
+    safety_order_usdt: float
     safety_step_pct: float
     safety_count: int
     safety_orders_count: int

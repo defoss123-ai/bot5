@@ -24,9 +24,9 @@ class PaperEngine:
     def open_position(self, current_price: float) -> None:
         self.state.position_open = True
         self.state.entry_price = current_price
-        buy_qty = self.settings.order_usdt / current_price
+        buy_qty = self.settings.first_order_usdt / current_price
         self.state.total_qty += buy_qty
-        self.state.total_usdt += self.settings.order_usdt
+        self.state.total_usdt += self.settings.first_order_usdt
         self.state.avg_price = self.state.total_usdt / self.state.total_qty
         self.state.filled_safety = 0
         self.state.tp_price = self.state.avg_price * (
@@ -34,6 +34,12 @@ class PaperEngine:
         )
         self.logger.info("Открыта позиция по цене %.6f", current_price)
         self.logger.info("TP поставлен на %.6f", self.state.tp_price)
+        self.logger.info(
+            "Paper: позиция total_usdt=%.2f, total_qty=%.6f, avg=%.6f",
+            self.state.total_usdt,
+            self.state.total_qty,
+            self.state.avg_price,
+        )
         self.emit_fn(
             f"Открыта позиция по цене {current_price:.6f}, TP {self.state.tp_price:.6f}"
         )
@@ -64,9 +70,9 @@ class PaperEngine:
             1 - next_index * self.settings.safety_order_step_percent / 100
         )
         if current_price <= safety_price:
-            qty = self.settings.order_usdt / safety_price
+            qty = self.settings.safety_order_usdt / safety_price
             self.state.total_qty += qty
-            self.state.total_usdt += self.settings.order_usdt
+            self.state.total_usdt += self.settings.safety_order_usdt
             self.state.avg_price = self.state.total_usdt / self.state.total_qty
             self.state.filled_safety = next_index
             self.state.tp_price = self.state.avg_price * (
@@ -77,6 +83,12 @@ class PaperEngine:
             )
             self.logger.info(
                 "Исполнена страховка %s по цене %.6f", next_index, safety_price
+            )
+            self.logger.info(
+                "Paper: позиция total_usdt=%.2f, total_qty=%.6f, avg=%.6f",
+                self.state.total_usdt,
+                self.state.total_qty,
+                self.state.avg_price,
             )
             self.logger.info("Новая средняя цена %.6f", self.state.avg_price)
             self.logger.info("Новый TP %.6f", self.state.tp_price)
