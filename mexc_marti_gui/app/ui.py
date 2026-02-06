@@ -241,9 +241,102 @@ def run_app() -> None:
     orders_table.column("sum", width=120, anchor="center")
     orders_table.column("amount", width=140, anchor="center")
 
+    tp_frame = tk.LabelFrame(root, text="Тейк-профиты (TP)")
+    tp_frame.pack(padx=20, pady=10, fill="x")
+
+    tk.Label(tp_frame, text="TP1 (%)").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+    tp1_entry = tk.Entry(tp_frame, width=12)
+    tp1_entry.insert(0, "1.0")
+    tp1_entry.grid(row=0, column=1, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="Доля TP1 (%)").grid(
+        row=0, column=2, sticky="w", padx=10, pady=5
+    )
+    tp1_share_entry = tk.Entry(tp_frame, width=12)
+    tp1_share_entry.insert(0, "30")
+    tp1_share_entry.grid(row=0, column=3, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="TP2 (%)").grid(row=1, column=0, sticky="w", padx=10, pady=5)
+    tp2_entry = tk.Entry(tp_frame, width=12)
+    tp2_entry.insert(0, "2.0")
+    tp2_entry.grid(row=1, column=1, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="Доля TP2 (%)").grid(
+        row=1, column=2, sticky="w", padx=10, pady=5
+    )
+    tp2_share_entry = tk.Entry(tp_frame, width=12)
+    tp2_share_entry.insert(0, "30")
+    tp2_share_entry.grid(row=1, column=3, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="TP3 (%)").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+    tp3_entry = tk.Entry(tp_frame, width=12)
+    tp3_entry.insert(0, "3.0")
+    tp3_entry.grid(row=2, column=1, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="Доля TP3 (%)").grid(
+        row=2, column=2, sticky="w", padx=10, pady=5
+    )
+    tp3_share_entry = tk.Entry(tp_frame, width=12)
+    tp3_share_entry.insert(0, "40")
+    tp3_share_entry.grid(row=2, column=3, sticky="w", pady=5)
+
+    tk.Label(tp_frame, text="Сумма долей должна быть 100%").grid(
+        row=3, column=0, columnspan=4, sticky="w", padx=10, pady=5
+    )
+
+    totals_frame = tk.LabelFrame(root, text="Итоги")
+    totals_frame.pack(padx=20, pady=10, fill="x")
+
+    total_usdt_value = tk.StringVar(value="0.00")
+    total_qty_value = tk.StringVar(value="0.000000")
+    avg_price_value = tk.StringVar(value="0.000000")
+
+    tk.Label(totals_frame, text="Всего USDT").grid(
+        row=0, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(totals_frame, textvariable=total_usdt_value).grid(
+        row=0, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(totals_frame, text="Всего монет").grid(
+        row=0, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(totals_frame, textvariable=total_qty_value).grid(
+        row=0, column=3, sticky="w", padx=10, pady=5
+    )
+    tk.Label(totals_frame, text="Средняя цена").grid(
+        row=0, column=4, sticky="w", padx=10, pady=5
+    )
+    tk.Label(totals_frame, textvariable=avg_price_value).grid(
+        row=0, column=5, sticky="w", padx=10, pady=5
+    )
+
+    tp_table_frame = tk.LabelFrame(root, text="План TP")
+    tp_table_frame.pack(padx=20, pady=10, fill="x")
+
+    tp_table = ttk.Treeview(
+        tp_table_frame,
+        columns=("level", "sell_price", "sell_qty", "usdt_get", "profit"),
+        show="headings",
+        height=5,
+    )
+    tp_table.heading("level", text="Уровень")
+    tp_table.heading("sell_price", text="Цена продажи")
+    tp_table.heading("sell_qty", text="Монет продать")
+    tp_table.heading("usdt_get", text="USDT получить")
+    tp_table.heading("profit", text="Прибыль (USDT)")
+    tp_table.column("level", width=80, anchor="center")
+    tp_table.column("sell_price", width=140, anchor="center")
+    tp_table.column("sell_qty", width=140, anchor="center")
+    tp_table.column("usdt_get", width=140, anchor="center")
+    tp_table.column("profit", width=140, anchor="center")
+
     def clear_orders_table() -> None:
         for item in orders_table.get_children():
             orders_table.delete(item)
+
+    def clear_tp_table() -> None:
+        for item in tp_table.get_children():
+            tp_table.delete(item)
 
     def handle_calculate_orders() -> None:
         try:
@@ -251,23 +344,59 @@ def run_app() -> None:
             sum_usdt = float(sum_usdt_entry.get().strip())
             step_pct = float(order_step_entry.get().strip())
             order_count = int(order_count_entry.get().strip())
+            tp1_pct = float(tp1_entry.get().strip())
+            tp1_share = float(tp1_share_entry.get().strip())
+            tp2_pct = float(tp2_entry.get().strip())
+            tp2_share = float(tp2_share_entry.get().strip())
+            tp3_pct = float(tp3_entry.get().strip())
+            tp3_share = float(tp3_share_entry.get().strip())
         except ValueError:
             logger.error("Ошибка ввода при расчёте страховочных ордеров")
             messagebox.showerror("Ошибка", "Введите корректные числа")
             return
 
-        if start_price <= 0 or sum_usdt <= 0 or step_pct <= 0 or order_count <= 0:
+        if (
+            start_price <= 0
+            or sum_usdt <= 0
+            or step_pct <= 0
+            or order_count < 0
+            or tp1_pct <= 0
+            or tp1_share <= 0
+            or tp2_pct <= 0
+            or tp2_share <= 0
+            or tp3_pct <= 0
+            or tp3_share <= 0
+        ):
             logger.error("Некорректные значения для расчёта страховочных ордеров")
             messagebox.showerror("Ошибка", "Введите корректные числа")
             return
 
+        shares_sum = tp1_share + tp2_share + tp3_share
+        if abs(shares_sum - 100.0) > 0.01:
+            logger.error("Сумма долей TP не равна 100%%: %s", shares_sum)
+            messagebox.showerror("Ошибка", "Сумма долей TP должна быть 100%")
+            return
+
         clear_orders_table()
+        clear_tp_table()
+
+        total_usdt = sum_usdt * (1 + order_count)
+        total_qty = 0.0
+
+        order0_qty = sum_usdt / start_price
+        total_qty += order0_qty
+        orders_table.insert(
+            "",
+            "end",
+            values=(0, f"{start_price:.6f}", f"{sum_usdt:.2f}", f"{order0_qty:.6f}"),
+        )
 
         for index in range(1, order_count + 1):
             price = start_price * (1 - (index * step_pct / 100))
             if price <= 0:
                 continue
             amount = sum_usdt / price
+            total_qty += amount
             orders_table.insert(
                 "",
                 "end",
@@ -279,12 +408,52 @@ def run_app() -> None:
                 ),
             )
 
+        avg_price = total_usdt / total_qty if total_qty > 0 else 0.0
+        total_usdt_value.set(f"{total_usdt:.2f}")
+        total_qty_value.set(f"{total_qty:.6f}")
+        avg_price_value.set(f"{avg_price:.6f}")
+
+        tp_levels = [
+            ("TP1", tp1_pct, tp1_share),
+            ("TP2", tp2_pct, tp2_share),
+            ("TP3", tp3_pct, tp3_share),
+        ]
+        for level, tp_pct, share_pct in tp_levels:
+            sell_price = avg_price * (1 + tp_pct / 100)
+            sell_qty = total_qty * (share_pct / 100)
+            usdt_get = sell_qty * sell_price
+            cost_basis = sell_qty * avg_price
+            profit = usdt_get - cost_basis
+            tp_table.insert(
+                "",
+                "end",
+                values=(
+                    level,
+                    f"{sell_price:.6f}",
+                    f"{sell_qty:.6f}",
+                    f"{usdt_get:.2f}",
+                    f"{profit:.2f}",
+                ),
+            )
+
         logger.info(
             "Calculated safety orders: %s, step=%s, start=%s, sum=%s",
             order_count,
             step_pct,
             start_price,
             sum_usdt,
+        )
+        logger.info(
+            "Totals: avg_price=%s, total_usdt=%s, total_qty=%s, tp=[%s/%s/%s], shares=[%s/%s/%s]",
+            avg_price,
+            total_usdt,
+            total_qty,
+            tp1_pct,
+            tp2_pct,
+            tp3_pct,
+            tp1_share,
+            tp2_share,
+            tp3_share,
         )
 
     calculate_button = tk.Button(
@@ -293,6 +462,7 @@ def run_app() -> None:
     calculate_button.grid(row=4, column=0, columnspan=2, pady=10)
 
     orders_table.pack(padx=20, pady=10, fill="x")
+    tp_table.pack(padx=10, pady=10, fill="x")
 
     exit_button = tk.Button(root, text="Выход", command=root.destroy)
     exit_button.pack(pady=10)
