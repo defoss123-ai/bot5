@@ -3,9 +3,11 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from .logger import get_logger
 from .indicators import calculate_rsi
+from .logger import get_logger
 from .mexc_api import MexcClient
+from .models import BotSettings, PaperState
+from .paper_engine import PaperEngine
 
 
 def run_app() -> None:
@@ -15,9 +17,11 @@ def run_app() -> None:
     root = tk.Tk()
     root.title("MEXC Спотовый Мартингейл-бот")
 
-    ui_queue: queue.Queue[tuple[str, str | float]] = queue.Queue()
+    ui_queue: queue.Queue[tuple[str, object]] = queue.Queue()
     simulation_event = threading.Event()
     simulation_thread: threading.Thread | None = None
+    paper_engine: PaperEngine | None = None
+    last_rsi_value: float | None = None
 
     frame = tk.Frame(root)
     frame.pack(padx=20, pady=20)
@@ -83,6 +87,12 @@ def run_app() -> None:
     rsi_entry = tk.Entry(strategy_frame, width=30)
     rsi_entry.insert(0, "30")
     rsi_entry.grid(row=2, column=1, sticky="w", pady=5)
+
+    rsi_filter_var = tk.BooleanVar(value=True)
+    rsi_filter_check = tk.Checkbutton(
+        strategy_frame, text="RSI фильтр", variable=rsi_filter_var
+    )
+    rsi_filter_check.grid(row=2, column=2, sticky="w", padx=10, pady=5)
 
     price_value = tk.StringVar(value="—")
     rsi_value = tk.StringVar(value="—")
@@ -151,6 +161,7 @@ def run_app() -> None:
         ui_queue.put(("error", message))
 
     def process_ui_queue() -> None:
+        nonlocal last_rsi_value
         while True:
             try:
                 item_type, payload = ui_queue.get_nowait()
@@ -162,10 +173,22 @@ def run_app() -> None:
             elif item_type == "price":
                 price_value.set(f"{payload:.6f}")
             elif item_type == "rsi":
+                last_rsi_value = float(payload)
                 rsi_value.set(f"{payload:.2f}")
             elif item_type == "error":
                 messagebox.showerror("Ошибка", str(payload))
+            elif item_type == "stats":
+                update_paper_stats(payload)
         root.after(200, process_ui_queue)
+
+    def update_paper_stats(state: PaperState) -> None:
+        safety_total = paper_engine.settings.safety_count if paper_engine else 0
+        position_status_value.set("Открыта" if state.position_open else "Нет")
+        avg_price_stat_value.set(f"{state.avg_price:.6f}")
+        tp_price_stat_value.set(f"{state.tp_price:.6f}")
+        safety_stat_value.set(f"{state.filled_safety}/{safety_total}")
+        pnl_stat_value.set(f"{state.realized_pnl_usdt:.2f}")
+        cycles_stat_value.set(str(state.cycles_closed))
 
     def handle_start() -> None:
         pair = pair_entry.get().strip()
@@ -265,6 +288,44 @@ def run_app() -> None:
             enqueue_error("RSI должен быть целым числом")
             return None
 
+    def build_settings() -> BotSettings | None:
+        symbol = pair_entry.get().strip()
+        if not symbol:
+            logger.error("Ошибка ввода: торговая пара пуста")
+            messagebox.showerror("Ошибка", "Торговая пара не должна быть пустой")
+            return None
+
+        threshold = get_rsi_threshold()
+        if threshold is None:
+            return None
+
+        try:
+            order_usdt = float(sum_usdt_entry.get().strip())
+            safety_step = float(order_step_entry.get().strip())
+            safety_count = int(order_count_entry.get().strip())
+            take_profit = float(tp_entry.get().strip())
+        except ValueError:
+            logger.error("Ошибка ввода: параметры ордеров должны быть числами")
+            messagebox.showerror("Ошибка", "Введите корректные числа")
+            return None
+
+        if order_usdt <= 0 or safety_step <= 0 or take_profit <= 0 or safety_count < 0:
+            logger.error("Ошибка ввода: некорректные параметры ордеров")
+            messagebox.showerror("Ошибка", "Введите корректные числа")
+            return None
+
+        return BotSettings(
+            symbol=symbol,
+            timeframe=timeframe_combo.get(),
+            rsi_enabled=rsi_filter_var.get(),
+            rsi_threshold=threshold,
+            order_usdt=order_usdt,
+            safety_step_pct=safety_step,
+            safety_count=safety_count,
+            take_profit_pct=take_profit,
+            poll_seconds=10,
+        )
+
     def extract_closes(klines: list) -> list[float]:
         closes: list[float] = []
         for item in klines:
@@ -273,6 +334,20 @@ def run_app() -> None:
             elif isinstance(item, dict) and "close" in item:
                 closes.append(float(item["close"]))
         return closes
+
+    def snapshot_state(state: PaperState) -> PaperState:
+        return PaperState(
+            running=state.running,
+            position_open=state.position_open,
+            entry_price=state.entry_price,
+            avg_price=state.avg_price,
+            total_qty=state.total_qty,
+            total_usdt=state.total_usdt,
+            filled_safety=state.filled_safety,
+            tp_price=state.tp_price,
+            realized_pnl_usdt=state.realized_pnl_usdt,
+            cycles_closed=state.cycles_closed,
+        )
 
     def handle_get_price() -> None:
         symbol = pair_entry.get().strip()
@@ -331,57 +406,51 @@ def run_app() -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def run_simulation() -> None:
-        symbol = pair_entry.get().strip()
-        interval = timeframe_combo.get()
-        threshold = get_rsi_threshold()
-        if not symbol:
-            logger.error("Ошибка ввода: торговая пара пуста для симуляции")
-            enqueue_error("Торговая пара не должна быть пустой")
-            return
-        if threshold is None:
-            return
+    def run_simulation(settings: BotSettings) -> None:
+        nonlocal paper_engine
+        logger.info("Запуск симуляции для %s (%s)", settings.symbol, settings.timeframe)
+        enqueue_log(f"Симуляция запущена для {settings.symbol} ({settings.timeframe})")
 
-        logger.info("Запуск симуляции для %s (%s)", symbol, interval)
-        enqueue_log(f"Симуляция запущена для {symbol} ({interval})")
+        def emit_fn(message: str) -> None:
+            enqueue_log(message)
+            if paper_engine:
+                ui_queue.put(("stats", snapshot_state(paper_engine.state)))
+
+        paper_engine = PaperEngine(get_client(), settings, logger, emit_fn)
+        paper_engine.start()
+        ui_queue.put(("stats", snapshot_state(paper_engine.state)))
 
         while not simulation_event.is_set():
             try:
-                client = get_client()
-                price = client.get_price(symbol)
-                klines = client.get_klines(symbol, interval, limit=200)
-                closes = extract_closes(klines)
-                rsi = calculate_rsi(closes)
+                price = paper_engine.client.get_price(settings.symbol)
             except Exception as exc:  # noqa: BLE001
-                logger.error("Ошибка симуляции: %s", exc)
-                enqueue_log(f"Ошибка симуляции: {exc}")
-                if simulation_event.wait(10):
+                logger.error("Ошибка получения цены в симуляции: %s", exc)
+                enqueue_log(f"Ошибка получения цены в симуляции: {exc}")
+                if simulation_event.wait(settings.poll_seconds):
                     break
                 continue
 
             ui_queue.put(("price", price))
-            ui_queue.put(("rsi", rsi))
-            enqueue_log(f"Цена {symbol}: {price:.6f}, RSI: {rsi:.2f}")
+            paper_engine.on_tick(price)
+            ui_queue.put(("stats", snapshot_state(paper_engine.state)))
 
-            if rsi < threshold:
-                logger.info("Можно входить")
-                enqueue_log("Можно входить")
-            else:
-                logger.info("Ждём")
-                enqueue_log("Ждём")
-
-            if simulation_event.wait(10):
+            if simulation_event.wait(settings.poll_seconds):
                 break
 
-        logger.info("Симуляция остановлена")
-        enqueue_log("Симуляция остановлена")
+        paper_engine.stop()
+        ui_queue.put(("stats", snapshot_state(paper_engine.state)))
 
     def handle_sim_start() -> None:
         nonlocal simulation_thread
         if simulation_thread and simulation_thread.is_alive():
             return
+        settings = build_settings()
+        if settings is None:
+            return
         simulation_event.clear()
-        simulation_thread = threading.Thread(target=run_simulation, daemon=True)
+        simulation_thread = threading.Thread(
+            target=run_simulation, args=(settings,), daemon=True
+        )
         simulation_thread.start()
         sim_start_button.configure(state="disabled")
         logger.info("Старт симуляции")
@@ -392,6 +461,47 @@ def run_app() -> None:
         sim_start_button.configure(state="normal")
         logger.info("Остановлено")
         enqueue_log("Остановлено")
+
+    def handle_sim_entry() -> None:
+        if not paper_mode_var.get():
+            logger.error("Paper mode выключен, вход запрещен")
+            messagebox.showerror("Ошибка", "Paper mode выключен")
+            return
+
+        settings = build_settings()
+        if settings is None:
+            return
+
+        if settings.rsi_enabled:
+            if last_rsi_value is None:
+                logger.error("RSI не рассчитан, вход запрещен")
+                messagebox.showerror("Ошибка", "Сначала проверьте RSI")
+                return
+            if last_rsi_value >= settings.rsi_threshold:
+                logger.info("RSI не пройден, вход запрещен")
+                enqueue_log("RSI не пройден, вход запрещен")
+                return
+
+        if not paper_engine or not paper_engine.state.running:
+            logger.error("PaperEngine не запущен")
+            messagebox.showerror("Ошибка", "Сначала запустите симуляцию")
+            return
+
+        try:
+            current_price = paper_engine.client.get_price(settings.symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Ошибка получения цены для входа: %s", exc)
+            messagebox.showerror("Ошибка", str(exc))
+            return
+
+        if paper_engine.state.position_open:
+            logger.info("Позиция уже открыта")
+            enqueue_log("Позиция уже открыта")
+            return
+
+        paper_engine.open_position(current_price)
+        ui_queue.put(("price", current_price))
+        ui_queue.put(("stats", snapshot_state(paper_engine.state)))
 
     buttons_frame = tk.Frame(strategy_frame)
     buttons_frame.grid(row=9, column=0, columnspan=2, pady=10)
@@ -416,12 +526,64 @@ def run_app() -> None:
         sim_buttons_frame, text="Стоп", command=handle_sim_stop
     )
     sim_stop_button.pack(side=tk.LEFT, padx=5)
+    sim_entry_button = tk.Button(
+        sim_buttons_frame, text="Симулировать вход", command=handle_sim_entry
+    )
+    sim_entry_button.pack(side=tk.LEFT, padx=5)
 
     status_text = tk.Text(root, height=2, width=60, state="disabled")
     status_text.pack(padx=20, pady=10, fill="x")
 
     log_text = tk.Text(root, height=8, width=60, state="disabled")
     log_text.pack(padx=20, pady=10, fill="both")
+
+    stats_frame = tk.LabelFrame(root, text="Статистика (Paper)")
+    stats_frame.pack(padx=20, pady=10, fill="x")
+
+    position_status_value = tk.StringVar(value="Нет")
+    avg_price_stat_value = tk.StringVar(value="0.000000")
+    tp_price_stat_value = tk.StringVar(value="0.000000")
+    safety_stat_value = tk.StringVar(value="0/0")
+    pnl_stat_value = tk.StringVar(value="0.00")
+    cycles_stat_value = tk.StringVar(value="0")
+
+    tk.Label(stats_frame, text="Позиция:").grid(
+        row=0, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=position_status_value).grid(
+        row=0, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, text="Средняя цена:").grid(
+        row=0, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=avg_price_stat_value).grid(
+        row=0, column=3, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, text="TP цена:").grid(
+        row=0, column=4, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=tp_price_stat_value).grid(
+        row=0, column=5, sticky="w", padx=10, pady=5
+    )
+
+    tk.Label(stats_frame, text="Исполнено страховок:").grid(
+        row=1, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=safety_stat_value).grid(
+        row=1, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, text="PnL суммарно (USDT):").grid(
+        row=1, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=pnl_stat_value).grid(
+        row=1, column=3, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, text="Закрыто циклов:").grid(
+        row=1, column=4, sticky="w", padx=10, pady=5
+    )
+    tk.Label(stats_frame, textvariable=cycles_stat_value).grid(
+        row=1, column=5, sticky="w", padx=10, pady=5
+    )
 
     orders_frame = tk.LabelFrame(root, text="Настройки ордеров")
     orders_frame.pack(padx=20, pady=10, fill="x")
