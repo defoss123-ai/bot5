@@ -195,6 +195,105 @@ def run_app() -> None:
     status_text = tk.Text(root, height=2, width=60, state="disabled")
     status_text.pack(padx=20, pady=10, fill="x")
 
+    orders_frame = tk.LabelFrame(root, text="Настройки ордеров")
+    orders_frame.pack(padx=20, pady=10, fill="x")
+
+    tk.Label(orders_frame, text="Стартовая цена").grid(
+        row=0, column=0, sticky="w", padx=10, pady=5
+    )
+    start_price_entry = tk.Entry(orders_frame, width=30)
+    start_price_entry.insert(0, "1.0000")
+    start_price_entry.grid(row=0, column=1, sticky="w", pady=5)
+
+    tk.Label(orders_frame, text="Сумма на 1 ордер (USDT)").grid(
+        row=1, column=0, sticky="w", padx=10, pady=5
+    )
+    sum_usdt_entry = tk.Entry(orders_frame, width=30)
+    sum_usdt_entry.insert(0, "10")
+    sum_usdt_entry.grid(row=1, column=1, sticky="w", pady=5)
+
+    tk.Label(orders_frame, text="Шаг страховочного ордера (%)").grid(
+        row=2, column=0, sticky="w", padx=10, pady=5
+    )
+    order_step_entry = tk.Entry(orders_frame, width=30)
+    order_step_entry.insert(0, "2")
+    order_step_entry.grid(row=2, column=1, sticky="w", pady=5)
+
+    tk.Label(orders_frame, text="Кол-во страховочных ордеров").grid(
+        row=3, column=0, sticky="w", padx=10, pady=5
+    )
+    order_count_entry = tk.Entry(orders_frame, width=30)
+    order_count_entry.insert(0, "5")
+    order_count_entry.grid(row=3, column=1, sticky="w", pady=5)
+
+    orders_table = ttk.Treeview(
+        root,
+        columns=("index", "price", "sum", "amount"),
+        show="headings",
+        height=6,
+    )
+    orders_table.heading("index", text="№")
+    orders_table.heading("price", text="Цена")
+    orders_table.heading("sum", text="Сумма USDT")
+    orders_table.heading("amount", text="Кол-во монет")
+    orders_table.column("index", width=40, anchor="center")
+    orders_table.column("price", width=120, anchor="center")
+    orders_table.column("sum", width=120, anchor="center")
+    orders_table.column("amount", width=140, anchor="center")
+
+    def clear_orders_table() -> None:
+        for item in orders_table.get_children():
+            orders_table.delete(item)
+
+    def handle_calculate_orders() -> None:
+        try:
+            start_price = float(start_price_entry.get().strip())
+            sum_usdt = float(sum_usdt_entry.get().strip())
+            step_pct = float(order_step_entry.get().strip())
+            order_count = int(order_count_entry.get().strip())
+        except ValueError:
+            logger.error("Ошибка ввода при расчёте страховочных ордеров")
+            messagebox.showerror("Ошибка", "Введите корректные числа")
+            return
+
+        if start_price <= 0 or sum_usdt <= 0 or step_pct <= 0 or order_count <= 0:
+            logger.error("Некорректные значения для расчёта страховочных ордеров")
+            messagebox.showerror("Ошибка", "Введите корректные числа")
+            return
+
+        clear_orders_table()
+
+        for index in range(1, order_count + 1):
+            price = start_price * (1 - (index * step_pct / 100))
+            if price <= 0:
+                continue
+            amount = sum_usdt / price
+            orders_table.insert(
+                "",
+                "end",
+                values=(
+                    index,
+                    f"{price:.6f}",
+                    f"{sum_usdt:.2f}",
+                    f"{amount:.6f}",
+                ),
+            )
+
+        logger.info(
+            "Calculated safety orders: %s, step=%s, start=%s, sum=%s",
+            order_count,
+            step_pct,
+            start_price,
+            sum_usdt,
+        )
+
+    calculate_button = tk.Button(
+        orders_frame, text="Рассчитать", command=handle_calculate_orders
+    )
+    calculate_button.grid(row=4, column=0, columnspan=2, pady=10)
+
+    orders_table.pack(padx=20, pady=10, fill="x")
+
     exit_button = tk.Button(root, text="Выход", command=root.destroy)
     exit_button.pack(pady=10)
 
