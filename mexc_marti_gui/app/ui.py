@@ -138,7 +138,7 @@ def run_app() -> None:
     tp_entry.insert(0, "1.0")
     tp_entry.grid(row=6, column=1, sticky="w", pady=5)
 
-    tk.Label(strategy_frame, text="Шаг страховочного ордера %").grid(
+    tk.Label(strategy_frame, text="Шаг страховочного ордера, %").grid(
         row=7, column=0, sticky="w", padx=10, pady=5
     )
     safety_step_entry = tk.Entry(strategy_frame, width=30)
@@ -194,7 +194,9 @@ def run_app() -> None:
         root.after(200, process_ui_queue)
 
     def update_paper_stats(state: PaperState) -> None:
-        safety_total = paper_engine.settings.safety_count if paper_engine else 0
+        safety_total = (
+            paper_engine.settings.safety_orders_count if paper_engine else 0
+        )
         position_status_value.set("Открыта" if state.position_open else "Нет")
         avg_price_stat_value.set(f"{state.avg_price:.6f}")
         tp_price_stat_value.set(f"{state.tp_price:.6f}")
@@ -255,10 +257,10 @@ def run_app() -> None:
             )
             return
 
-        if safety_step_value <= 0:
-            logger.error("Ошибка валидации: шаг страховочного ордера <= 0")
+        if not 0.1 <= safety_step_value <= 50:
+            logger.error("Ошибка валидации: шаг страховочного ордера вне диапазона")
             messagebox.showerror(
-                "Ошибка", "Шаг страховочного ордера должен быть больше 0"
+                "Ошибка", "Шаг страховочного ордера должен быть 0.1..50"
             )
             return
 
@@ -271,10 +273,10 @@ def run_app() -> None:
             )
             return
 
-        if safety_count_value < 0:
-            logger.error("Ошибка валидации: кол-во страховочных ордеров < 0")
+        if not 0 <= safety_count_value <= 50:
+            logger.error("Ошибка валидации: кол-во страховочных ордеров вне диапазона")
             messagebox.showerror(
-                "Ошибка", "Кол-во страховочных ордеров должно быть 0 или больше"
+                "Ошибка", "Кол-во страховочных ордеров должно быть 0..50"
             )
             return
 
@@ -334,9 +336,23 @@ def run_app() -> None:
             messagebox.showerror("Ошибка", "Введите корректные числа")
             return None
 
-        if order_usdt <= 0 or safety_step <= 0 or take_profit <= 0 or safety_count < 0:
+        if order_usdt <= 0 or take_profit <= 0:
             logger.error("Ошибка ввода: некорректные параметры ордеров")
             messagebox.showerror("Ошибка", "Введите корректные числа")
+            return None
+
+        if not 0 <= safety_count <= 50:
+            logger.error("Ошибка ввода: кол-во страховочных ордеров вне диапазона")
+            messagebox.showerror(
+                "Ошибка", "Кол-во страховочных ордеров должно быть 0..50"
+            )
+            return None
+
+        if not 0.1 <= safety_step <= 50:
+            logger.error("Ошибка ввода: шаг страховочного ордера вне диапазона")
+            messagebox.showerror(
+                "Ошибка", "Шаг страховочного ордера должен быть 0.1..50"
+            )
             return None
 
         return BotSettings(
@@ -347,6 +363,8 @@ def run_app() -> None:
             order_usdt=order_usdt,
             safety_step_pct=safety_step,
             safety_count=safety_count,
+            safety_orders_count=safety_count,
+            safety_order_step_percent=safety_step,
             take_profit_pct=take_profit,
             poll_seconds=10,
         )
@@ -850,7 +868,7 @@ def run_app() -> None:
     sum_usdt_entry.insert(0, "10")
     sum_usdt_entry.grid(row=1, column=1, sticky="w", pady=5)
 
-    tk.Label(orders_frame, text="Шаг страховочного ордера (%)").grid(
+    tk.Label(orders_frame, text="Шаг страховочного ордера, %").grid(
         row=2, column=0, sticky="w", padx=10, pady=5
     )
     order_step_entry = tk.Entry(orders_frame, width=30)

@@ -12,6 +12,8 @@ class BotSettings:
     order_usdt: float
     safety_step_pct: float
     safety_count: int
+    safety_orders_count: int
+    safety_order_step_percent: float
     take_profit_pct: float
     poll_seconds: int
 

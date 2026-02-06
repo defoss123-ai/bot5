@@ -56,12 +56,12 @@ class PaperEngine:
             self._check_tp(current_price)
 
     def _check_safety(self, current_price: float) -> None:
-        if self.state.filled_safety >= self.settings.safety_count:
+        if self.state.filled_safety >= self.settings.safety_orders_count:
             return
 
         next_index = self.state.filled_safety + 1
         safety_price = self.state.entry_price * (
-            1 - next_index * self.settings.safety_step_pct / 100
+            1 - next_index * self.settings.safety_order_step_percent / 100
         )
         if current_price <= safety_price:
             qty = self.settings.order_usdt / safety_price
@@ -71,6 +71,9 @@ class PaperEngine:
             self.state.filled_safety = next_index
             self.state.tp_price = self.state.avg_price * (
                 1 + self.settings.take_profit_pct / 100
+            )
+            self.logger.info(
+                "Paper: safety order #%s filled at price=%.6f", next_index, safety_price
             )
             self.logger.info(
                 "Исполнена страховка %s по цене %.6f", next_index, safety_price
