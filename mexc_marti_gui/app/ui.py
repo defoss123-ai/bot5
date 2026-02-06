@@ -1,7 +1,10 @@
+import queue
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .logger import get_logger
+from .indicators import calculate_rsi
 from .mexc_api import MexcClient
 
 
@@ -11,6 +14,10 @@ def run_app() -> None:
 
     root = tk.Tk()
     root.title("MEXC Спотовый Мартингейл-бот")
+
+    ui_queue: queue.Queue[tuple[str, str | float]] = queue.Queue()
+    simulation_event = threading.Event()
+    simulation_thread: threading.Thread | None = None
 
     frame = tk.Frame(root)
     frame.pack(padx=20, pady=20)
@@ -40,9 +47,11 @@ def run_app() -> None:
         if success:
             logger.info("MEXC connection successful")
             messagebox.showinfo("Успех", "Подключение к MEXC успешно")
+            enqueue_log("Подключение к MEXC успешно")
         else:
             logger.error("MEXC connection error: %s", message)
             messagebox.showerror("Ошибка", message)
+            enqueue_log(f"Ошибка подключения к MEXC: {message}")
 
     check_button = tk.Button(
         frame, text="Проверить подключение", command=handle_check_connection
@@ -75,32 +84,88 @@ def run_app() -> None:
     rsi_entry.insert(0, "30")
     rsi_entry.grid(row=2, column=1, sticky="w", pady=5)
 
+    price_value = tk.StringVar(value="—")
+    rsi_value = tk.StringVar(value="—")
+
+    market_info_frame = tk.Frame(strategy_frame)
+    market_info_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+    tk.Label(market_info_frame, text="Цена:").pack(side=tk.LEFT)
+    tk.Label(market_info_frame, textvariable=price_value).pack(side=tk.LEFT, padx=5)
+    tk.Label(market_info_frame, text="RSI:").pack(side=tk.LEFT, padx=15)
+    tk.Label(market_info_frame, textvariable=rsi_value).pack(side=tk.LEFT, padx=5)
+
+    market_buttons_frame = tk.Frame(strategy_frame)
+    market_buttons_frame.grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+    get_price_button = tk.Button(
+        market_buttons_frame, text="Получить цену", command=handle_get_price
+    )
+    get_price_button.pack(side=tk.LEFT, padx=5)
+    check_rsi_button = tk.Button(
+        market_buttons_frame, text="Проверить RSI", command=handle_check_rsi
+    )
+    check_rsi_button.pack(side=tk.LEFT, padx=5)
+
+    paper_mode_var = tk.BooleanVar(value=True)
+    paper_mode_check = tk.Checkbutton(
+        strategy_frame, text="Paper mode (без реальных ордеров)", variable=paper_mode_var
+    )
+    paper_mode_check.grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+
     tk.Label(strategy_frame, text="Take Profit %").grid(
-        row=3, column=0, sticky="w", padx=10, pady=5
+        row=6, column=0, sticky="w", padx=10, pady=5
     )
     tp_entry = tk.Entry(strategy_frame, width=30)
     tp_entry.insert(0, "1.0")
-    tp_entry.grid(row=3, column=1, sticky="w", pady=5)
+    tp_entry.grid(row=6, column=1, sticky="w", pady=5)
 
     tk.Label(strategy_frame, text="Шаг страховочного ордера %").grid(
-        row=4, column=0, sticky="w", padx=10, pady=5
+        row=7, column=0, sticky="w", padx=10, pady=5
     )
     safety_step_entry = tk.Entry(strategy_frame, width=30)
     safety_step_entry.insert(0, "2.0")
-    safety_step_entry.grid(row=4, column=1, sticky="w", pady=5)
+    safety_step_entry.grid(row=7, column=1, sticky="w", pady=5)
 
     tk.Label(strategy_frame, text="Кол-во страховочных ордеров").grid(
-        row=5, column=0, sticky="w", padx=10, pady=5
+        row=8, column=0, sticky="w", padx=10, pady=5
     )
     safety_count_entry = tk.Entry(strategy_frame, width=30)
     safety_count_entry.insert(0, "5")
-    safety_count_entry.grid(row=5, column=1, sticky="w", pady=5)
+    safety_count_entry.grid(row=8, column=1, sticky="w", pady=5)
 
     def update_status(text: str) -> None:
         status_text.configure(state="normal")
         status_text.delete("1.0", tk.END)
         status_text.insert(tk.END, text)
         status_text.configure(state="disabled")
+
+    def append_log(message: str) -> None:
+        log_text.configure(state="normal")
+        log_text.insert(tk.END, f"{message}\n")
+        log_text.see(tk.END)
+        log_text.configure(state="disabled")
+
+    def enqueue_log(message: str) -> None:
+        ui_queue.put(("log", message))
+
+    def enqueue_error(message: str) -> None:
+        ui_queue.put(("error", message))
+
+    def process_ui_queue() -> None:
+        while True:
+            try:
+                item_type, payload = ui_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if item_type == "log":
+                append_log(str(payload))
+            elif item_type == "price":
+                price_value.set(f"{payload:.6f}")
+            elif item_type == "rsi":
+                rsi_value.set(f"{payload:.2f}")
+            elif item_type == "error":
+                messagebox.showerror("Ошибка", str(payload))
+        root.after(200, process_ui_queue)
 
     def handle_start() -> None:
         pair = pair_entry.get().strip()
@@ -177,23 +242,186 @@ def run_app() -> None:
         )
         start_button.configure(state="disabled")
         update_status("Бот запущен (пока без торговли)")
+        enqueue_log("Бот запущен (пока без торговли)")
 
     def handle_stop() -> None:
         logger.info("Бот остановлен")
         start_button.configure(state="normal")
         update_status("Бот остановлен")
+        enqueue_log("Бот остановлен")
+
+    def get_client() -> MexcClient:
+        return MexcClient(
+            api_key=api_key_entry.get().strip(),
+            api_secret=api_secret_entry.get().strip(),
+            base_url=base_url_entry.get().strip(),
+        )
+
+    def get_rsi_threshold() -> int | None:
+        try:
+            return int(rsi_entry.get().strip())
+        except ValueError:
+            logger.error("Ошибка ввода: RSI порог должен быть целым числом")
+            enqueue_error("RSI должен быть целым числом")
+            return None
+
+    def extract_closes(klines: list) -> list[float]:
+        closes: list[float] = []
+        for item in klines:
+            if isinstance(item, list) and len(item) > 4:
+                closes.append(float(item[4]))
+            elif isinstance(item, dict) and "close" in item:
+                closes.append(float(item["close"]))
+        return closes
+
+    def handle_get_price() -> None:
+        symbol = pair_entry.get().strip()
+        if not symbol:
+            logger.error("Ошибка ввода: торговая пара пуста для получения цены")
+            messagebox.showerror("Ошибка", "Торговая пара не должна быть пустой")
+            return
+
+        def worker() -> None:
+            try:
+                price = get_client().get_price(symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка получения цены: %s", exc)
+                enqueue_error(str(exc))
+                enqueue_log(f"Ошибка получения цены: {exc}")
+                return
+            logger.info("Цена %s: %.6f", symbol, price)
+            enqueue_log(f"Цена {symbol}: {price:.6f}")
+            ui_queue.put(("price", price))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def handle_check_rsi() -> None:
+        symbol = pair_entry.get().strip()
+        if not symbol:
+            logger.error("Ошибка ввода: торговая пара пуста для RSI")
+            messagebox.showerror("Ошибка", "Торговая пара не должна быть пустой")
+            return
+
+        threshold = get_rsi_threshold()
+        if threshold is None:
+            return
+
+        interval = timeframe_combo.get()
+
+        def worker() -> None:
+            try:
+                klines = get_client().get_klines(symbol, interval, limit=200)
+                closes = extract_closes(klines)
+                rsi = calculate_rsi(closes)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка расчёта RSI: %s", exc)
+                enqueue_error(str(exc))
+                enqueue_log(f"Ошибка расчёта RSI: {exc}")
+                return
+
+            logger.info("RSI %s (%s): %.2f", symbol, interval, rsi)
+            enqueue_log(f"RSI {symbol} ({interval}): {rsi:.2f}")
+            ui_queue.put(("rsi", rsi))
+            if rsi < threshold:
+                logger.info("RSI фильтр пройден")
+                enqueue_log("RSI фильтр пройден")
+            else:
+                logger.info("RSI фильтр не пройден")
+                enqueue_log("RSI фильтр не пройден")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_simulation() -> None:
+        symbol = pair_entry.get().strip()
+        interval = timeframe_combo.get()
+        threshold = get_rsi_threshold()
+        if not symbol:
+            logger.error("Ошибка ввода: торговая пара пуста для симуляции")
+            enqueue_error("Торговая пара не должна быть пустой")
+            return
+        if threshold is None:
+            return
+
+        logger.info("Запуск симуляции для %s (%s)", symbol, interval)
+        enqueue_log(f"Симуляция запущена для {symbol} ({interval})")
+
+        while not simulation_event.is_set():
+            try:
+                client = get_client()
+                price = client.get_price(symbol)
+                klines = client.get_klines(symbol, interval, limit=200)
+                closes = extract_closes(klines)
+                rsi = calculate_rsi(closes)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка симуляции: %s", exc)
+                enqueue_log(f"Ошибка симуляции: {exc}")
+                if simulation_event.wait(10):
+                    break
+                continue
+
+            ui_queue.put(("price", price))
+            ui_queue.put(("rsi", rsi))
+            enqueue_log(f"Цена {symbol}: {price:.6f}, RSI: {rsi:.2f}")
+
+            if rsi < threshold:
+                logger.info("Можно входить")
+                enqueue_log("Можно входить")
+            else:
+                logger.info("Ждём")
+                enqueue_log("Ждём")
+
+            if simulation_event.wait(10):
+                break
+
+        logger.info("Симуляция остановлена")
+        enqueue_log("Симуляция остановлена")
+
+    def handle_sim_start() -> None:
+        nonlocal simulation_thread
+        if simulation_thread and simulation_thread.is_alive():
+            return
+        simulation_event.clear()
+        simulation_thread = threading.Thread(target=run_simulation, daemon=True)
+        simulation_thread.start()
+        sim_start_button.configure(state="disabled")
+        logger.info("Старт симуляции")
+        enqueue_log("Старт симуляции")
+
+    def handle_sim_stop() -> None:
+        simulation_event.set()
+        sim_start_button.configure(state="normal")
+        logger.info("Остановлено")
+        enqueue_log("Остановлено")
 
     buttons_frame = tk.Frame(strategy_frame)
-    buttons_frame.grid(row=6, column=0, columnspan=2, pady=10)
+    buttons_frame.grid(row=9, column=0, columnspan=2, pady=10)
 
-    start_button = tk.Button(buttons_frame, text="▶ Старт", command=handle_start)
+    start_button = tk.Button(
+        buttons_frame, text="▶ Старт стратегии", command=handle_start
+    )
     start_button.pack(side=tk.LEFT, padx=5)
 
-    stop_button = tk.Button(buttons_frame, text="⏹ Стоп", command=handle_stop)
+    stop_button = tk.Button(
+        buttons_frame, text="⏹ Стоп стратегии", command=handle_stop
+    )
     stop_button.pack(side=tk.LEFT, padx=5)
+
+    sim_buttons_frame = tk.Frame(strategy_frame)
+    sim_buttons_frame.grid(row=10, column=0, columnspan=2, pady=5)
+    sim_start_button = tk.Button(
+        sim_buttons_frame, text="Старт (симуляция)", command=handle_sim_start
+    )
+    sim_start_button.pack(side=tk.LEFT, padx=5)
+    sim_stop_button = tk.Button(
+        sim_buttons_frame, text="Стоп", command=handle_sim_stop
+    )
+    sim_stop_button.pack(side=tk.LEFT, padx=5)
 
     status_text = tk.Text(root, height=2, width=60, state="disabled")
     status_text.pack(padx=20, pady=10, fill="x")
+
+    log_text = tk.Text(root, height=8, width=60, state="disabled")
+    log_text.pack(padx=20, pady=10, fill="both")
 
     orders_frame = tk.LabelFrame(root, text="Настройки ордеров")
     orders_frame.pack(padx=20, pady=10, fill="x")
@@ -455,6 +683,11 @@ def run_app() -> None:
             tp2_share,
             tp3_share,
         )
+        enqueue_log(
+            "Итоги расчёта: средняя цена={:.6f}, всего USDT={:.2f}, всего монет={:.6f}".format(
+                avg_price, total_usdt, total_qty
+            )
+        )
 
     calculate_button = tk.Button(
         orders_frame, text="Рассчитать", command=handle_calculate_orders
@@ -467,4 +700,5 @@ def run_app() -> None:
     exit_button = tk.Button(root, text="Выход", command=root.destroy)
     exit_button.pack(pady=10)
 
+    root.after(200, process_ui_queue)
     root.mainloop()
