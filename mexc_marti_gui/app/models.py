@@ -16,6 +16,12 @@ class BotSettings:
     safety_count: int
     safety_orders_count: int
     safety_order_step_percent: float
+    tp1_percent: float
+    tp2_percent: float
+    tp3_percent: float
+    tp1_share: int
+    tp2_share: int
+    tp3_share: int
     take_profit_pct: float
     poll_seconds: int
 
@@ -32,3 +38,6 @@ class PaperState:
     tp_price: float = 0.0
     realized_pnl_usdt: float = 0.0
     cycles_closed: int = 0
+    tp1_done: bool = False
+    tp2_done: bool = False
+    tp3_done: bool = False

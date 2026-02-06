@@ -332,6 +332,12 @@ def run_app() -> None:
             safety_step = float(order_step_entry.get().strip())
             safety_count = int(order_count_entry.get().strip())
             take_profit = float(tp_entry.get().strip())
+            tp1_percent = float(tp1_entry.get().strip())
+            tp2_percent = float(tp2_entry.get().strip())
+            tp3_percent = float(tp3_entry.get().strip())
+            tp1_share = int(tp1_share_entry.get().strip())
+            tp2_share = int(tp2_share_entry.get().strip())
+            tp3_share = int(tp3_share_entry.get().strip())
         except ValueError:
             logger.error("Ошибка ввода: параметры ордеров должны быть числами")
             messagebox.showerror("Ошибка", "Введите корректные числа")
@@ -354,6 +360,30 @@ def run_app() -> None:
             messagebox.showerror(
                 "Ошибка", "Сумма страховочного ордера должна быть 1..100000"
             )
+            return None
+
+        if not 0.1 <= tp1_percent <= 50:
+            messagebox.showerror("Ошибка", "TP1 % должен быть 0.1..50")
+            return None
+        if not 0.1 <= tp2_percent <= 50:
+            messagebox.showerror("Ошибка", "TP2 % должен быть 0.1..50")
+            return None
+        if not 0.1 <= tp3_percent <= 50:
+            messagebox.showerror("Ошибка", "TP3 % должен быть 0.1..50")
+            return None
+
+        if not 0 <= tp1_share <= 100:
+            messagebox.showerror("Ошибка", "Доля TP1 должна быть 0..100")
+            return None
+        if not 0 <= tp2_share <= 100:
+            messagebox.showerror("Ошибка", "Доля TP2 должна быть 0..100")
+            return None
+        if not 0 <= tp3_share <= 100:
+            messagebox.showerror("Ошибка", "Доля TP3 должна быть 0..100")
+            return None
+
+        if tp1_share + tp2_share + tp3_share != 100:
+            messagebox.showerror("Ошибка", "Сумма долей TP должна быть 100")
             return None
 
         if not 0 <= safety_count <= 50:
@@ -382,6 +412,12 @@ def run_app() -> None:
             safety_count=safety_count,
             safety_orders_count=safety_count,
             safety_order_step_percent=safety_step,
+            tp1_percent=tp1_percent,
+            tp2_percent=tp2_percent,
+            tp3_percent=tp3_percent,
+            tp1_share=tp1_share,
+            tp2_share=tp2_share,
+            tp3_share=tp3_share,
             take_profit_pct=take_profit,
             poll_seconds=10,
         )
