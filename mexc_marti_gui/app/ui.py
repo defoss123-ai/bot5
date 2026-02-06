@@ -8,6 +8,7 @@ from .logger import get_logger
 from .mexc_api import MexcClient
 from .models import BotSettings, PaperState
 from .paper_engine import PaperEngine
+from .real_engine import RealEngine, RealState
 
 
 def run_app() -> None:
@@ -22,6 +23,9 @@ def run_app() -> None:
     simulation_thread: threading.Thread | None = None
     paper_engine: PaperEngine | None = None
     last_rsi_value: float | None = None
+    real_thread: threading.Thread | None = None
+    real_event = threading.Event()
+    real_engine: RealEngine | None = None
 
     frame = tk.Frame(root)
     frame.pack(padx=20, pady=20)
@@ -121,6 +125,12 @@ def run_app() -> None:
     )
     paper_mode_check.grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=5)
 
+    real_mode_var = tk.BooleanVar(value=False)
+    real_mode_check = tk.Checkbutton(
+        strategy_frame, text="Реальный режим", variable=real_mode_var
+    )
+    real_mode_check.grid(row=5, column=2, sticky="w", padx=10, pady=5)
+
     tk.Label(strategy_frame, text="Take Profit %").grid(
         row=6, column=0, sticky="w", padx=10, pady=5
     )
@@ -179,6 +189,8 @@ def run_app() -> None:
                 messagebox.showerror("Ошибка", str(payload))
             elif item_type == "stats":
                 update_paper_stats(payload)
+            elif item_type == "real_state":
+                update_real_stats(payload)
         root.after(200, process_ui_queue)
 
     def update_paper_stats(state: PaperState) -> None:
@@ -189,6 +201,19 @@ def run_app() -> None:
         safety_stat_value.set(f"{state.filled_safety}/{safety_total}")
         pnl_stat_value.set(f"{state.realized_pnl_usdt:.2f}")
         cycles_stat_value.set(str(state.cycles_closed))
+
+    def update_real_stats(state: RealState) -> None:
+        real_entry_id_value.set(state.entry_order_id or "—")
+        real_entry_status_value.set(state.entry_status or "—")
+        real_tp_id_value.set(state.tp_order_id or "—")
+        real_tp_status_value.set(state.tp_status or "—")
+        real_safety_value.set(
+            f"{state.filled_safety}/{real_engine.settings.safety_count if real_engine else 0}"
+        )
+        real_total_usdt_value.set(f"{state.total_usdt:.2f}")
+        real_total_qty_value.set(f"{state.total_qty:.6f}")
+        real_avg_price_value.set(f"{state.avg_price:.6f}")
+        real_tp_price_value.set(f"{state.tp_price:.6f}")
 
     def handle_start() -> None:
         pair = pair_entry.get().strip()
@@ -349,6 +374,26 @@ def run_app() -> None:
             cycles_closed=state.cycles_closed,
         )
 
+    def snapshot_real_state(state: RealState) -> RealState:
+        return RealState(
+            running=state.running,
+            position_open=state.position_open,
+            entry_price=state.entry_price,
+            avg_price=state.avg_price,
+            total_qty=state.total_qty,
+            total_usdt=state.total_usdt,
+            filled_safety=state.filled_safety,
+            tp_price=state.tp_price,
+            realized_pnl_usdt=state.realized_pnl_usdt,
+            cycles_closed=state.cycles_closed,
+            entry_order_id=state.entry_order_id,
+            entry_status=state.entry_status,
+            tp_order_id=state.tp_order_id,
+            tp_status=state.tp_status,
+            safety_order_ids=list(state.safety_order_ids),
+            last_status=state.last_status,
+        )
+
     def handle_get_price() -> None:
         symbol = pair_entry.get().strip()
         if not symbol:
@@ -462,6 +507,98 @@ def run_app() -> None:
         logger.info("Остановлено")
         enqueue_log("Остановлено")
 
+    def run_real_engine(
+        settings: BotSettings,
+        clean_start: bool,
+        cancel_on_stop: bool,
+        auto_restart: bool,
+    ) -> None:
+        nonlocal real_engine
+        def emit_fn(message: str) -> None:
+            enqueue_log(message)
+            if real_engine:
+                ui_queue.put(("real_state", snapshot_real_state(real_engine.state)))
+
+        real_engine = RealEngine(get_client(), settings, logger, emit_fn)
+        try:
+            real_engine.start(clean_start=clean_start)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Ошибка запуска реального режима: %s", exc)
+            enqueue_error(str(exc))
+            enqueue_log(f"Ошибка запуска реального режима: {exc}")
+            return
+
+        ui_queue.put(("real_state", snapshot_real_state(real_engine.state)))
+        while not real_event.is_set():
+            try:
+                real_engine.on_tick(auto_restart=auto_restart)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка цикла реального режима: %s", exc)
+                enqueue_log(f"Ошибка цикла реального режима: {exc}")
+            ui_queue.put(("real_state", snapshot_real_state(real_engine.state)))
+            if real_event.wait(settings.poll_seconds):
+                break
+
+        if cancel_on_stop:
+            try:
+                real_engine.cancel_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка отмены ордеров при стопе: %s", exc)
+                enqueue_log(f"Ошибка отмены ордеров при стопе: {exc}")
+        real_engine.stop()
+        ui_queue.put(("real_state", snapshot_real_state(real_engine.state)))
+
+    def handle_real_start() -> None:
+        nonlocal real_thread
+        if not real_mode_var.get():
+            logger.error("Реальный режим выключен")
+            messagebox.showerror("Ошибка", "Включите реальный режим")
+            return
+        if real_thread and real_thread.is_alive():
+            return
+        settings = build_settings()
+        if settings is None:
+            return
+        real_event.clear()
+        real_thread = threading.Thread(
+            target=run_real_engine,
+            args=(
+                settings,
+                clean_start_var.get(),
+                cancel_on_stop_var.get(),
+                auto_restart_var.get(),
+            ),
+            daemon=True,
+        )
+        real_thread.start()
+        enqueue_log("Старт реального режима")
+
+    def handle_real_stop() -> None:
+        real_event.set()
+        enqueue_log("Стоп реального режима")
+
+    def handle_cancel_orders() -> None:
+        if not real_mode_var.get():
+            logger.error("Реальный режим выключен")
+            messagebox.showerror("Ошибка", "Включите реальный режим")
+            return
+
+        symbol = pair_entry.get().strip()
+        if not symbol:
+            messagebox.showerror("Ошибка", "Торговая пара не должна быть пустой")
+            return
+
+        def worker() -> None:
+            try:
+                get_client().cancel_all_orders(symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка отмены ордеров: %s", exc)
+                enqueue_error(str(exc))
+                return
+            enqueue_log("Ордера отменены")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def handle_sim_entry() -> None:
         if not paper_mode_var.get():
             logger.error("Paper mode выключен, вход запрещен")
@@ -519,7 +656,7 @@ def run_app() -> None:
     sim_buttons_frame = tk.Frame(strategy_frame)
     sim_buttons_frame.grid(row=10, column=0, columnspan=2, pady=5)
     sim_start_button = tk.Button(
-        sim_buttons_frame, text="Старт (симуляция)", command=handle_sim_start
+        sim_buttons_frame, text="Старт (Paper)", command=handle_sim_start
     )
     sim_start_button.pack(side=tk.LEFT, padx=5)
     sim_stop_button = tk.Button(
@@ -530,6 +667,23 @@ def run_app() -> None:
         sim_buttons_frame, text="Симулировать вход", command=handle_sim_entry
     )
     sim_entry_button.pack(side=tk.LEFT, padx=5)
+
+    real_buttons_frame = tk.Frame(strategy_frame)
+    real_buttons_frame.grid(row=11, column=0, columnspan=2, pady=5)
+    real_start_button = tk.Button(
+        real_buttons_frame, text="Старт (Реальный)", command=handle_real_start
+    )
+    real_start_button.pack(side=tk.LEFT, padx=5)
+    real_stop_button = tk.Button(
+        real_buttons_frame, text="Стоп", command=handle_real_stop
+    )
+    real_stop_button.pack(side=tk.LEFT, padx=5)
+    cancel_orders_button = tk.Button(
+        real_buttons_frame,
+        text="Отменить все ордера (пара)",
+        command=handle_cancel_orders,
+    )
+    cancel_orders_button.pack(side=tk.LEFT, padx=5)
 
     status_text = tk.Text(root, height=2, width=60, state="disabled")
     status_text.pack(padx=20, pady=10, fill="x")
@@ -583,6 +737,100 @@ def run_app() -> None:
     )
     tk.Label(stats_frame, textvariable=cycles_stat_value).grid(
         row=1, column=5, sticky="w", padx=10, pady=5
+    )
+
+    real_controls_frame = tk.LabelFrame(root, text="Защиты (Реальный)")
+    real_controls_frame.pack(padx=20, pady=10, fill="x")
+
+    clean_start_var = tk.BooleanVar(value=True)
+    cancel_on_stop_var = tk.BooleanVar(value=True)
+    auto_restart_var = tk.BooleanVar(value=False)
+
+    tk.Checkbutton(
+        real_controls_frame,
+        text="Чистый старт (отменить ордера перед запуском)",
+        variable=clean_start_var,
+    ).pack(anchor="w", padx=10, pady=2)
+    tk.Checkbutton(
+        real_controls_frame,
+        text="Отменять ордера при стопе",
+        variable=cancel_on_stop_var,
+    ).pack(anchor="w", padx=10, pady=2)
+    tk.Checkbutton(
+        real_controls_frame,
+        text="Авто-перезапуск",
+        variable=auto_restart_var,
+    ).pack(anchor="w", padx=10, pady=2)
+
+    real_state_frame = tk.LabelFrame(root, text="Состояние (Реальный)")
+    real_state_frame.pack(padx=20, pady=10, fill="x")
+
+    real_entry_id_value = tk.StringVar(value="—")
+    real_entry_status_value = tk.StringVar(value="—")
+    real_tp_id_value = tk.StringVar(value="—")
+    real_tp_status_value = tk.StringVar(value="—")
+    real_safety_value = tk.StringVar(value="0/0")
+    real_total_usdt_value = tk.StringVar(value="0.00")
+    real_total_qty_value = tk.StringVar(value="0.000000")
+    real_avg_price_value = tk.StringVar(value="0.000000")
+    real_tp_price_value = tk.StringVar(value="0.000000")
+
+    tk.Label(real_state_frame, text="Entry ID:").grid(
+        row=0, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_entry_id_value).grid(
+        row=0, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, text="Статус Entry:").grid(
+        row=0, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_entry_status_value).grid(
+        row=0, column=3, sticky="w", padx=10, pady=5
+    )
+
+    tk.Label(real_state_frame, text="TP ID:").grid(
+        row=1, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_tp_id_value).grid(
+        row=1, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, text="Статус TP:").grid(
+        row=1, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_tp_status_value).grid(
+        row=1, column=3, sticky="w", padx=10, pady=5
+    )
+
+    tk.Label(real_state_frame, text="Исполнено страховок:").grid(
+        row=2, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_safety_value).grid(
+        row=2, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, text="Total USDT:").grid(
+        row=2, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_total_usdt_value).grid(
+        row=2, column=3, sticky="w", padx=10, pady=5
+    )
+
+    tk.Label(real_state_frame, text="Total Qty:").grid(
+        row=3, column=0, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_total_qty_value).grid(
+        row=3, column=1, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, text="Avg Price:").grid(
+        row=3, column=2, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_avg_price_value).grid(
+        row=3, column=3, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, text="TP Price:").grid(
+        row=3, column=4, sticky="w", padx=10, pady=5
+    )
+    tk.Label(real_state_frame, textvariable=real_tp_price_value).grid(
+        row=3, column=5, sticky="w", padx=10, pady=5
     )
 
     orders_frame = tk.LabelFrame(root, text="Настройки ордеров")
