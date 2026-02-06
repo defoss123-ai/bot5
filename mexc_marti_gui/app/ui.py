@@ -15,15 +15,15 @@ def run_app() -> None:
     frame = tk.Frame(root)
     frame.pack(padx=20, pady=20)
 
-    tk.Label(frame, text="API Key").grid(row=0, column=0, sticky="w", pady=5)
+    tk.Label(frame, text="API ключ").grid(row=0, column=0, sticky="w", pady=5)
     api_key_entry = tk.Entry(frame, width=50)
     api_key_entry.grid(row=0, column=1, pady=5)
 
-    tk.Label(frame, text="API Secret").grid(row=1, column=0, sticky="w", pady=5)
+    tk.Label(frame, text="API секрет").grid(row=1, column=0, sticky="w", pady=5)
     api_secret_entry = tk.Entry(frame, width=50, show="*")
     api_secret_entry.grid(row=1, column=1, pady=5)
 
-    tk.Label(frame, text="Base URL").grid(row=2, column=0, sticky="w", pady=5)
+    tk.Label(frame, text="Базовый URL").grid(row=2, column=0, sticky="w", pady=5)
     base_url_entry = tk.Entry(frame, width=50)
     base_url_entry.insert(0, "https://api.mexc.com")
     base_url_entry.grid(row=2, column=1, pady=5)
